@@ -1,9 +1,12 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.responses import JSONResponse, Response
 from redis import Redis
 import json
 import jsonschema
 from json.decoder import JSONDecodeError
+import jwt
+from jwt import PyJWKClient
+import hashlib
 
 app = FastAPI()
 redis = Redis(host='localhost', port=6379, db=0)
@@ -75,8 +78,34 @@ schema = {
     "additionalProperties": False
 }
 
+# Clear all data in Redis when the server starts
+@app.on_event("startup")
+async def startup_event():
+    redis.flushdb()
+
+# Validate Google Bearer token
+GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
+CLIENT_ID = "132133612061-krvs9s1lp0udoijkafote2fo1k60ebtv.apps.googleusercontent.com"  # Replace with your actual client ID
+NGROK_URL = "https://41a7-155-33-133-27.ngrok-free.app"
+async def verify_google_token(authorization: str = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header missing")
+    
+    token = authorization.split(" ")[1] if "Bearer " in authorization else None
+    if not token:
+        raise HTTPException(status_code=401, detail="Invalid token format")
+
+    try:
+        jwks_client = PyJWKClient(GOOGLE_JWKS_URL)
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        payload = jwt.decode(token, signing_key.key, algorithms=["RS256"], audience=[CLIENT_ID, NGROK_URL], issuer="https://accounts.google.com")
+        return payload
+    except (jwt.exceptions.InvalidTokenError, jwt.exceptions.PyJWKClientError):
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+
+# Create Plan (POST)
 @app.post("/v1/plan")
-async def create_plan(request: Request):
+async def create_plan(request: Request, user_info: dict = Depends(verify_google_token)):
     try:
         data = await request.json()
     except JSONDecodeError:
@@ -88,7 +117,7 @@ async def create_plan(request: Request):
     try:
         jsonschema.validate(instance=data, schema=schema)
     except jsonschema.exceptions.ValidationError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid data in request body")
+        raise HTTPException(status_code=400, detail="Invalid data in request body")
     
     object_id = data.get("objectId")
     
@@ -97,11 +126,23 @@ async def create_plan(request: Request):
     
     # Store the data in Redis
     redis.hset("plan", object_id, json.dumps(data))
+    # Generate ETag
+    etag = hashlib.md5(json.dumps(data).encode()).hexdigest()
     
-    return JSONResponse(content={"message": "Plan successfully created.", "objectId": object_id}, status_code=201)
+    # Create response
+    response = JSONResponse(
+        content={"message": "Plan successfully created.", "objectId": object_id},
+        status_code=201
+    )
+    
+    # Add ETag to response header
+    response.headers["ETag"] = f'"{etag}"'
+    
+    return response
 
+# Get Plan (GET)
 @app.get("/v1/plan/{object_id}")
-async def get_plan(object_id: str, request: Request):
+async def get_plan(object_id: str, request: Request, user_info: dict = Depends(verify_google_token)):
     if_none_match = request.headers.get("If-None-Match")
     
     plan_data = redis.hget("plan", object_id)
@@ -109,17 +150,71 @@ async def get_plan(object_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Plan not found")
     
     plan = json.loads(plan_data)
-    etag = hash(json.dumps(plan))
+    # Generate ETag using MD5 hash
+    etag = hashlib.md5(json.dumps(plan).encode()).hexdigest()
     
-    if if_none_match and int(if_none_match) == etag:
+    if if_none_match and if_none_match.strip('"') == etag:
         return Response(status_code=304)
 
     response = JSONResponse(content=plan)
-    response.headers["ETag"] = str(etag)
+    response.headers["ETag"] = f'"{etag}"'
     return response
 
+
+@app.patch("/v1/plan/{object_id}")
+async def patch_plan(object_id: str, request: Request, user_info: dict = Depends(verify_google_token)):
+    try:
+        existing_data = redis.hget("plan", object_id)
+        if not existing_data:
+            raise HTTPException(status_code=404, detail="Plan not found")
+        
+        existing_data = json.loads(existing_data)
+
+        # Generate ETag for existing data
+        existing_etag = hashlib.md5(json.dumps(existing_data).encode()).hexdigest()
+
+        # Check If-Match header
+        if_match = request.headers.get("If-Match")
+        if if_match:
+            if if_match.strip('"') != existing_etag:
+                raise HTTPException(status_code=412, detail="Precondition Failed: ETag mismatch")
+
+        # Get the update data from the request
+        update_data = await request.json()
+        
+        # Merge existing data with update data
+        updated_data = {**existing_data, **update_data}
+        
+        # Check if the data has actually changed
+        if updated_data == existing_data:
+            raise HTTPException(status_code=412, detail="Precondition Failed: No changes detected")
+        
+        # Validate updated data against JSON schema
+        jsonschema.validate(instance=updated_data, schema=schema)
+
+        # Store the updated data in Redis
+        redis.hset("plan", object_id, json.dumps(updated_data))
+
+        # Generate new ETag for the updated data
+        new_etag = hashlib.md5(json.dumps(updated_data).encode()).hexdigest()
+
+        # Create response with ETag
+        response = JSONResponse(
+            content={"message": "Plan partially updated.", "objectId": object_id},
+            status_code=200
+        )
+        
+        # Add new ETag to response header
+        response.headers["ETag"] = f'"{new_etag}"'
+
+        return response
+
+    except jsonschema.exceptions.ValidationError:
+        raise HTTPException(status_code=400, detail="Invalid data in request body")
+
+# Delete Plan (DELETE)
 @app.delete("/v1/plan/{object_id}")
-async def delete_plan(object_id: str):
+async def delete_plan(object_id: str, user_info: dict = Depends(verify_google_token)):
     if not redis.hexists("plan", object_id):
         raise HTTPException(status_code=404, detail="Plan not found")
     
