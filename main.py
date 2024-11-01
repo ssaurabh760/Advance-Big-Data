@@ -71,10 +71,10 @@ schema = {
         "_org": {"type": "string"},
         "objectId": {"type": "string"},
         "objectType": {"type": "string"},
-        "planType": {"type": "string"},
+        "planStatus": {"type": "string"},
         "creationDate": {"type": "string"}
     },
-    "required": ["planCostShares", "linkedPlanServices", "_org", "objectId", "objectType", "planType", "creationDate"],
+    "required": ["planCostShares", "linkedPlanServices", "_org", "objectId", "objectType", "planStatus", "creationDate"],
     "additionalProperties": False
 }
 
@@ -181,13 +181,20 @@ async def patch_plan(object_id: str, request: Request, user_info: dict = Depends
 
         # Get the update data from the request
         update_data = await request.json()
-        
-        # Merge existing data with update data
-        updated_data = {**existing_data, **update_data}
-        
-        # Check if the data has actually changed
-        if updated_data == existing_data:
-            raise HTTPException(status_code=412, detail="Precondition Failed: No changes detected")
+
+        # Deep merge function to handle nested updates
+        def deep_merge(source, update):
+            for key, value in update.items():
+                if isinstance(value, dict):
+                    source[key] = deep_merge(source.get(key, {}), value)
+                elif isinstance(value, list):
+                    source[key] = source.get(key, []) + value
+                else:
+                    source[key] = value
+            return source
+
+        # Apply updates
+        updated_data = deep_merge(existing_data, update_data)
         
         # Validate updated data against JSON schema
         jsonschema.validate(instance=updated_data, schema=schema)
@@ -211,7 +218,6 @@ async def patch_plan(object_id: str, request: Request, user_info: dict = Depends
 
     except jsonschema.exceptions.ValidationError:
         raise HTTPException(status_code=400, detail="Invalid data in request body")
-
 # Delete Plan (DELETE)
 @app.delete("/v1/plan/{object_id}")
 async def delete_plan(object_id: str, user_info: dict = Depends(verify_google_token)):
