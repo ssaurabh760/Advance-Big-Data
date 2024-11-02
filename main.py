@@ -183,12 +183,21 @@ async def patch_plan(object_id: str, request: Request, user_info: dict = Depends
         update_data = await request.json()
 
         # Deep merge function to handle nested updates
+        # Function to deep merge dictionaries
         def deep_merge(source, update):
             for key, value in update.items():
                 if isinstance(value, dict):
                     source[key] = deep_merge(source.get(key, {}), value)
                 elif isinstance(value, list):
-                    source[key] = source.get(key, []) + value
+                    # Handle linkedPlanServices specially
+                    if key == "linkedPlanServices":
+                        existing_ids = set(item['objectId'] for item in source.get(key, []))
+                        for new_item in value:
+                            if new_item['objectId'] not in existing_ids:
+                                source.setdefault(key, []).append(new_item)
+                                existing_ids.add(new_item['objectId'])
+                    else:
+                        source[key] = value
                 else:
                     source[key] = value
             return source
@@ -207,7 +216,7 @@ async def patch_plan(object_id: str, request: Request, user_info: dict = Depends
 
         # Create response with ETag
         response = JSONResponse(
-            content={"message": "Plan partially updated.", "objectId": object_id},
+            content=updated_data,
             status_code=200
         )
         
