@@ -175,12 +175,17 @@ async def patch_plan(object_id: str, request: Request, user_info: dict = Depends
 
         # Check If-Match header
         if_match = request.headers.get("If-Match")
+        if not if_match:
+            raise HTTPException(status_code=412, detail="Precondition Failed: If-Match header is required")
         if if_match:
             if if_match.strip('"') != existing_etag:
                 raise HTTPException(status_code=412, detail="Precondition Failed: ETag mismatch")
 
         # Get the update data from the request
         update_data = await request.json()
+
+        if 'objectId' in update_data and update_data['objectId'] != object_id:
+            raise HTTPException(status_code=400, detail="Changing the main object ID is not allowed")
 
         # Deep merge function to handle nested updates
         # Function to deep merge dictionaries
