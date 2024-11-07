@@ -86,7 +86,7 @@ async def startup_event():
 # Validate Google Bearer token
 GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
 CLIENT_ID = "132133612061-krvs9s1lp0udoijkafote2fo1k60ebtv.apps.googleusercontent.com"  # Replace with your actual client ID
-NGROK_URL = "https://41a7-155-33-133-27.ngrok-free.app"
+# NGROK_URL = "https://41a7-155-33-133-27.ngrok-free.app"
 async def verify_google_token(authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header missing")
@@ -98,7 +98,7 @@ async def verify_google_token(authorization: str = Header(None)):
     try:
         jwks_client = PyJWKClient(GOOGLE_JWKS_URL)
         signing_key = jwks_client.get_signing_key_from_jwt(token)
-        payload = jwt.decode(token, signing_key.key, algorithms=["RS256"], audience=[CLIENT_ID, NGROK_URL], issuer="https://accounts.google.com")
+        payload = jwt.decode(token, signing_key.key, algorithms=["RS256"], audience=[CLIENT_ID], issuer="https://accounts.google.com")
         return payload
     except (jwt.exceptions.InvalidTokenError, jwt.exceptions.PyJWKClientError):
         raise HTTPException(status_code=401, detail="Invalid authentication token")
