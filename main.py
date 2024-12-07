@@ -7,14 +7,61 @@ from json.decoder import JSONDecodeError
 import jwt
 from jwt import PyJWKClient
 import hashlib
+from elasticsearch import Elasticsearch
+from elasticsearch_dsl import Search, Q
+
+import pika
+import uuid
+import urllib3
+from kafka import KafkaProducer
+import threading
+import time
 
 app = FastAPI()
 redis = Redis(host='localhost', port=6379, db=0)
+urllib3.disable_warnings()
+es = Elasticsearch(
+    ["https://localhost:9200"],
+    basic_auth=("elastic", "EQC7rE-sOVAiTGiw7Sx-"),
+    verify_certs=False
+)
 
+# Kafka producer setup
+producer = KafkaProducer(bootstrap_servers=['localhost:9092'],
+                         value_serializer=lambda v: json.dumps(v).encode('utf-8'))
+
+# Create index with parent-child mapping
+def create_elasticsearch_mapping():
+    mapping = {
+        "mappings": {
+            "properties": {
+                "plan_join": {
+                    "type": "join",
+                    "relations": {
+                        "plan": ["planCostShares", "linkedPlanServices"],
+                        "linkedPlanServices": ["linkedService", "planserviceCostShares"]
+                    }
+                },
+                "objectId": {"type": "keyword"},
+                "objectType": {"type": "keyword"},
+                "_org": {"type": "keyword"},
+                "deductible": {"type": "integer"},
+                "copay": {"type": "integer"},
+                "name": {"type": "keyword"},
+                "planStatus": {"type": "keyword"},
+                "creationDate": {"type": "date", "format": "dd-MM-yyyy||yyyy-MM-dd"}
+            }
+        }
+    }
+    
+    # Create index if not exists
+    if not es.indices.exists(index="plans"):
+        es.indices.create(index="plans", body=mapping)
 # Clear all data in Redis when the server starts
 @app.on_event("startup")
 async def startup_event():
     redis.flushdb()
+    create_elasticsearch_mapping()
 
 # JSON Schema for validation
 schema = {
@@ -78,15 +125,9 @@ schema = {
     "additionalProperties": False
 }
 
-# Clear all data in Redis when the server starts
-@app.on_event("startup")
-async def startup_event():
-    redis.flushdb()
-
 # Validate Google Bearer token
 GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
-CLIENT_ID = "132133612061-krvs9s1lp0udoijkafote2fo1k60ebtv.apps.googleusercontent.com"  # Replace with your actual client ID
-# NGROK_URL = "https://41a7-155-33-133-27.ngrok-free.app"
+CLIENT_ID = "132133612061-krvs9s1lp0udoijkafote2fo1k60ebtv.apps.googleusercontent.com"
 async def verify_google_token(authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header missing")
@@ -103,6 +144,10 @@ async def verify_google_token(authorization: str = Header(None)):
     except (jwt.exceptions.InvalidTokenError, jwt.exceptions.PyJWKClientError):
         raise HTTPException(status_code=401, detail="Invalid authentication token")
 
+# Helper function to publish Kafka message
+def publish_kafka_message(topic, message):
+    producer.send(topic, message)
+    producer.flush()
 # Create Plan (POST)
 @app.post("/v1/plan")
 async def create_plan(request: Request, user_info: dict = Depends(verify_google_token)):
@@ -126,6 +171,8 @@ async def create_plan(request: Request, user_info: dict = Depends(verify_google_
     
     # Store the data in Redis
     redis.hset("plan", object_id, json.dumps(data))
+    # Publish Kafka message for Elasticsearch indexing
+    publish_kafka_message('plan_operations', {'operation': 'create', 'data': data})
     # Generate ETag
     etag = hashlib.md5(json.dumps(data).encode()).hexdigest()
     
@@ -216,6 +263,9 @@ async def patch_plan(object_id: str, request: Request, user_info: dict = Depends
         # Store the updated data in Redis
         redis.hset("plan", object_id, json.dumps(updated_data))
 
+       # Publish Kafka message for Elasticsearch updating
+        publish_kafka_message('plan_operations', {'operation': 'update', 'data': updated_data})
+
         # Generate new ETag for the updated data
         new_etag = hashlib.md5(json.dumps(updated_data).encode()).hexdigest()
 
@@ -239,4 +289,9 @@ async def delete_plan(object_id: str, user_info: dict = Depends(verify_google_to
         raise HTTPException(status_code=404, detail="Plan not found")
     
     redis.hdel("plan", object_id)
+   # Publish Kafka message for Elasticsearch deletion
+    publish_kafka_message('plan_operations', {'operation': 'delete', 'data': {'objectId': object_id}})
+    
+    
     return Response(status_code=204)
+
