@@ -9,7 +9,7 @@ consumer = KafkaConsumer('plan_operations',
 
 es = Elasticsearch(
     ["https://localhost:9200"],
-    basic_auth=("elastic", "EQC7rE-sOVAiTGiw7Sx-"),
+    basic_auth=("elastic", "$(Elastic)"),
     verify_certs=False
 )
 def process_message(message):

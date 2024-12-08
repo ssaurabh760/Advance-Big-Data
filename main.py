@@ -22,7 +22,7 @@ redis = Redis(host='localhost', port=6379, db=0)
 urllib3.disable_warnings()
 es = Elasticsearch(
     ["https://localhost:9200"],
-    basic_auth=("elastic", "EQC7rE-sOVAiTGiw7Sx-"),
+    basic_auth=("elastic", "$(Elastic)"),
     verify_certs=False
 )
 
@@ -127,7 +127,7 @@ schema = {
 
 # Validate Google Bearer token
 GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
-CLIENT_ID = "132133612061-krvs9s1lp0udoijkafote2fo1k60ebtv.apps.googleusercontent.com"
+CLIENT_ID = $(CLIENT_ID)
 async def verify_google_token(authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header missing")
