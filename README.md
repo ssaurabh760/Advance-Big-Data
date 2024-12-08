@@ -9,10 +9,14 @@
 This project implements a  plan management system using FastAPI, Elasticsearch, Redis, and Kafka. It manages healthcare plans with complex nested structures including plan cost shares, linked services, and service cost shares using parent-child relationships in Elasticsearch.
 System Architecture
 
-FastAPI: REST API endpoints for CRUD operations
+## FastAPI: REST API endpoints for CRUD operations
+
 Elasticsearch: Document storage with parent-child relationships
+
 Redis: Cache layer for quick plan lookups
+
 Kafka: Message broker for asynchronous operations
+
 
 # Data Structure
 The system manages healthcare plans with the following hierarchy:
@@ -24,8 +28,11 @@ CopyPlan
 Parent-Child Relationships
 
 Plan → PlanCostShares (1:1)
+
 Plan → LinkedPlanServices (1:n)
+
 LinkedPlanServices → LinkedService (1:1)
+
 LinkedPlanServices → PlanServiceCostShares (1:1)
 
 # Setup and Installation
